@@ -146,10 +146,13 @@ async def test_on_load_registers_nonblocking_activity_listener_and_schedule(
     assert scheduler.jobs[0]["job_id"] == "proactive_companionship"
     assert scheduler.jobs[0]["minutes"] == 5
 
-    group_ctx = MatcherContext(message_type="group", plain_text="/鲸鱼娘 你好")
-    private_ctx = MatcherContext(message_type="private", plain_text="/鲸鱼娘 你好")
+    group_ctx = MatcherContext(message_type="group", plain_text="/dsh 你好")
+    private_ctx = MatcherContext(message_type="private", plain_text="/dsh 你好")
+    legacy_ctx = MatcherContext(message_type="private", plain_text="/鲸鱼娘 你好")
     assert not await plugin.matchers[1].rule.check(None, {}, group_ctx)
     assert await plugin.matchers[1].rule.check(None, {}, private_ctx)
+    assert not await plugin.matchers[1].rule.check(None, {}, legacy_ctx)
+    assert plugin.matchers[1].meta["command"] == "dsh"
 
 
 @pytest.mark.asyncio

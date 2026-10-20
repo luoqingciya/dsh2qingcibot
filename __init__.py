@@ -292,9 +292,8 @@ class WhaleCompanionPlugin(PluginBase):
         )
         self.matchers.append(
             on_command(
-                "whale",
+                "dsh",
                 rule=is_private(),
-                aliases=("鲸鱼娘", "鲸鱼", "陪伴"),
                 priority=1,
                 description="和鲸鱼娘聊天、管理主动陪伴",
             )(self._handle_command)
@@ -359,9 +358,9 @@ class WhaleCompanionPlugin(PluginBase):
         action = args.casefold()
         if action in {"帮助", "help", "?"}:
             return (
-                "鲸鱼娘可以陪你聊聊天。直接发送 /鲸鱼娘 <内容> 开始对话；\n"
-                "发送 /鲸鱼娘 状态 查看主动陪伴状态；\n"
-                "发送 /鲸鱼娘 暂停 或 /鲸鱼娘 继续，管理主动消息。"
+                "鲸鱼娘可以陪你聊聊天。直接发送 /dsh <内容> 开始对话；\n"
+                "发送 /dsh 状态 查看主动陪伴状态；\n"
+                "发送 /dsh 暂停 或 /dsh 继续，管理主动消息。"
             )
         if action in {"状态", "status"}:
             config = self._config()
@@ -374,7 +373,7 @@ class WhaleCompanionPlugin(PluginBase):
             )
         if action in {"暂停", "停止", "别打扰", "关闭主动陪伴"}:
             await self._set_opt_out(ctx, True)
-            return "好，我会暂停向这个会话发送主动消息。你随时可以发送 /鲸鱼娘 继续。"
+            return "好，我会暂停向这个会话发送主动消息。你随时可以发送 /dsh 继续。"
         if action in {"继续", "开启", "恢复"}:
             await self._set_opt_out(ctx, False)
             return "收到，我会恢复这个会话的主动陪伴设置；仍会遵守间隔和免打扰时段。"
