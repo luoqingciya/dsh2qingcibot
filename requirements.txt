@@ -1,0 +1,1 @@
+# No extra dependencies; Qingci-Bot provides qingci_plugin_sdk.
