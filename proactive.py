@@ -32,7 +32,7 @@ async def _safe_persist(persist: Persist) -> None:
     try:
         await persist()
     except Exception:
-        logger.exception("鲸鱼娘状态保存失败")
+        logger.exception("陪伴插件状态保存失败")
 
 
 async def consolidate_targets(
@@ -53,14 +53,14 @@ async def consolidate_targets(
             if await engine.consolidate(target_id, llm):
                 consolidated += 1
         except Exception:
-            logger.exception("鲸鱼娘记忆整理失败: target=%s", target_id)
+            logger.exception("角色记忆整理失败: target=%s", target_id)
     if consolidated:
         await _safe_persist(persist)
     return consolidated
 
 
 def _is_repetitive(reply: str, profile: UserState) -> bool:
-    """与最近几条鲸鱼娘消息高度相似时视为重复。"""
+    """与最近几条角色消息高度相似时视为重复。"""
     tokens = tokenize(reply)
     if not tokens:
         return True
@@ -155,7 +155,7 @@ async def send_due_messages(
                 target_id, now_ts, f"{type(error).__name__}: {error}"
             )
             await _safe_persist(persist)
-            logger.exception("鲸鱼娘主动私聊消息发送失败: target=%s", target_id)
+            logger.exception("主动私聊消息发送失败: target=%s", target_id)
             continue
 
         # 已成功送达：后续状态写入失败不应被记为发送失败
@@ -164,5 +164,5 @@ async def send_due_messages(
         engine.observe_bot_message(target_id, reply, now_ts)
         await _safe_persist(persist)
         sent += 1
-        logger.info("鲸鱼娘主动私聊消息已发送: target=%s", target_id)
+        logger.info("主动私聊消息已发送: target=%s", target_id)
     return sent

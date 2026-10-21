@@ -83,16 +83,17 @@ def overlap(left: set[str], right: set[str]) -> float:
     return len(left & right) / min(len(left), len(right))
 
 
-def extract_facts(text: str) -> list[str]:
+def extract_facts(text: str, *, name: str = "") -> list[str]:
     """用本地规则抽取稳定事实，不产生额外模型调用。"""
     content = normalize(text)
     if not content:
         return []
+    deictic = _DEICTIC | ({name.strip()} if name.strip() else set())
     facts: list[str] = []
     for pattern, template in _FACT_PATTERNS:
         for match in pattern.finditer(content):
             captured = normalize(match.group(1))
-            if not captured or captured in _DEICTIC:
+            if not captured or captured in deictic:
                 continue
             fact = template.format(captured)[:_MAX_FACT_CHARS]
             if fact not in facts:
@@ -280,7 +281,7 @@ def _build_consolidate_prompt(profile: UserState) -> str:
         "最近对话：",
     ]
     for turn in profile.turns[-8:]:
-        speaker = "用户" if turn.role == "user" else "鲸鱼娘"
+        speaker = "用户" if turn.role == "user" else "我"
         lines.append(f"{speaker}：{turn.text}")
     lines.append(
         '输出 JSON：{"summary": "不超过120字的概述", "facts": ["简短事实", "..."]}。'
@@ -313,7 +314,7 @@ async def consolidate(
             temperature=0.2,
         )
     except Exception:
-        logger.warning("鲸鱼娘记忆整理调用失败", exc_info=True)
+        logger.warning("角色记忆整理调用失败", exc_info=True)
         return False
     payload = _parse_json_payload(str(getattr(result, "content", "") or ""))
     if payload is None:

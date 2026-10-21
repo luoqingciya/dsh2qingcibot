@@ -88,9 +88,11 @@ class _Result:
 class _Adapter:
     def __init__(self) -> None:
         self.prompt = ""
+        self.system = ""
 
     async def chat_detail(self, **kwargs):
         self.prompt = kwargs["messages"][0]["content"]
+        self.system = kwargs.get("system_prompt", "")
         return _Result()
 
 
@@ -112,6 +114,16 @@ async def test_write_entry_uses_dialogue_and_memory(tmp_path) -> None:
     assert "我下周三要考试" in llm.adapter.prompt
     assert "计划 下周三考试" in llm.adapter.prompt
     assert "只输出日记正文" in llm.adapter.prompt
+
+
+@pytest.mark.asyncio
+async def test_write_entry_uses_custom_persona_name(tmp_path) -> None:
+    profile = make_profile(tmp_path)
+    llm = _LLM()
+
+    await write_entry(llm, profile, NOW, moment=MOMENT, half_life_hours=12, name="小鲸")
+
+    assert "你是小鲸" in llm.adapter.system
 
 
 @pytest.mark.asyncio

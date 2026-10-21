@@ -10,6 +10,8 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .config import DEFAULT_PERSONA_NAME
+
 CommandKind = Literal[
     "help",
     "status",
@@ -20,25 +22,33 @@ CommandKind = Literal[
     "remember",
     "export",
     "diary",
+    "diagnose",
     "chat",
 ]
-
-DEFAULT_CHAT_MESSAGE = "鲸鱼娘，陪我聊聊天吧。"
 
 # 导出文本上限，避免超过平台单条消息长度限制
 _MAX_EXPORT_CHARS = 3500
 
-HELP_TEXT = (
-    "鲸鱼娘可以陪你聊天，也会记住一些关于你的事。\n"
-    "· /dsh <内容>：开始对话\n"
-    "· /dsh 记忆：查看我记得的内容\n"
-    "· /dsh 记住 <内容>：让我记住一件事\n"
-    "· /dsh 忘记 [关键词]：清除记忆\n"
-    "· /dsh 导出：导出我的记忆\n"
-    "· /dsh 日记：看鲸鱼娘最近的日记\n"
-    "· /dsh 状态：查看主动陪伴与当前心情\n"
-    "· /dsh 暂停 / /dsh 继续：管理主动消息"
-)
+
+def default_chat_message(name: str = DEFAULT_PERSONA_NAME) -> str:
+    return f"{name.strip() or DEFAULT_PERSONA_NAME}，陪我聊聊天吧。"
+
+
+def help_text(name: str = DEFAULT_PERSONA_NAME) -> str:
+    who = name.strip() or DEFAULT_PERSONA_NAME
+    return (
+        f"{who}可以陪你聊天，也会记住一些关于你的事。\n"
+        "· /dsh <内容>：开始对话\n"
+        "· /dsh 记忆：查看我记得的内容\n"
+        "· /dsh 记住 <内容>：让我记住一件事\n"
+        "· /dsh 忘记 [关键词]：清除记忆\n"
+        "· /dsh 导出：导出我的记忆\n"
+        f"· /dsh 日记：看{who}最近的日记\n"
+        "· /dsh 诊断：确认插件人设是否生效\n"
+        "· /dsh 状态：查看主动陪伴与当前心情\n"
+        "· /dsh 暂停 / /dsh 继续：管理主动消息"
+    )
+
 
 _EXACT_COMMANDS: dict[str, CommandKind] = {
     "帮助": "help",
@@ -58,6 +68,9 @@ _EXACT_COMMANDS: dict[str, CommandKind] = {
     "回忆": "memory",
     "导出": "export",
     "export": "export",
+    "诊断": "diagnose",
+    "diag": "diagnose",
+    "diagnose": "diagnose",
 }
 
 
@@ -76,7 +89,7 @@ def parse(args: str) -> Command:
     """
     text = (args or "").strip()
     if not text:
-        return Command("chat", DEFAULT_CHAT_MESSAGE)
+        return Command("chat", "")
     exact = _EXACT_COMMANDS.get(text.casefold())
     if exact is not None:
         return Command(exact)

@@ -258,14 +258,14 @@ class StateStore:
         except FileNotFoundError:
             return
         except OSError:
-            logger.warning("鲸鱼娘状态文件读取失败，使用空状态", exc_info=True)
+            logger.warning("陪伴插件状态文件读取失败，使用空状态", exc_info=True)
             return
         try:
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise TypeError("state.json 顶层必须为对象")
         except (TypeError, ValueError):
-            logger.warning("鲸鱼娘状态文件损坏，已备份并重置", exc_info=True)
+            logger.warning("陪伴插件状态文件损坏，已备份并重置", exc_info=True)
             self._backup_corrupt()
             return
         self._users = self._parse(data)

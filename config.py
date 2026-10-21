@@ -22,6 +22,7 @@ DEFAULT_EMOTION_DECAY_HOURS = 12
 DEFAULT_MEMORY_RETENTION_DAYS = 90
 DEFAULT_DIARY_HOUR = 23
 DEFAULT_DIARY_MAX_ENTRIES = 30
+DEFAULT_PERSONA_NAME = "鲸鱼娘"
 
 
 def _boolean(name: str, value: Any) -> bool:
@@ -46,11 +47,19 @@ def _targets(name: str, values: list[str] | tuple[str, ...] | None) -> list[str]
     return [str(value).strip() for value in values if str(value).strip()]
 
 
+def _persona_name(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TypeError("persona_name 必须是字符串")
+    return value.strip()[:20] or DEFAULT_PERSONA_NAME
+
+
 class CompanionConfig:
-    """鲸鱼娘插件配置；私聊目标为空时不会主动发送任何消息。"""
+    """陪伴插件配置；私聊目标为空时不会主动发送任何消息。"""
 
     enabled: bool
     private_targets: list[str]
+    private_auto_reply: bool
+    persona_name: str
     interval_hours: int
     idle_minutes: int
     daily_limit: int
@@ -69,6 +78,8 @@ class CompanionConfig:
         self,
         enabled: bool = True,
         private_targets: list[str] | None = None,
+        private_auto_reply: bool = True,
+        persona_name: str = DEFAULT_PERSONA_NAME,
         interval_hours: int = DEFAULT_INTERVAL_HOURS,
         idle_minutes: int = DEFAULT_IDLE_MINUTES,
         daily_limit: int = DEFAULT_DAILY_LIMIT,
@@ -86,6 +97,8 @@ class CompanionConfig:
     ) -> None:
         self.enabled = _boolean("enabled", enabled)
         self.private_targets = _targets("private_targets", private_targets)
+        self.private_auto_reply = _boolean("private_auto_reply", private_auto_reply)
+        self.persona_name = _persona_name(persona_name)
         self.interval_hours = _integer("interval_hours", interval_hours, 1, 168)
         self.idle_minutes = _integer("idle_minutes", idle_minutes, 5, 1440)
         self.daily_limit = _integer("daily_limit", daily_limit, 1, 5)
@@ -116,6 +129,8 @@ class CompanionConfig:
         return {
             "enabled": self.enabled,
             "private_targets": list(self.private_targets),
+            "private_auto_reply": self.private_auto_reply,
+            "persona_name": self.persona_name,
             "interval_hours": self.interval_hours,
             "idle_minutes": self.idle_minutes,
             "daily_limit": self.daily_limit,
@@ -146,6 +161,17 @@ class CompanionConfig:
                     "items": {"type": "string"},
                     "default": [],
                     "description": "允许主动私聊的用户 ID 列表；请用字符串填写",
+                },
+                "private_auto_reply": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "是否用插件人设接管白名单用户的普通私聊（内置 chat 插件不再回复）",
+                },
+                "persona_name": {
+                    "type": "string",
+                    "default": DEFAULT_PERSONA_NAME,
+                    "maxLength": 20,
+                    "description": "角色名；留空则使用默认名",
                 },
                 "interval_hours": {
                     "type": "integer",
@@ -220,7 +246,7 @@ class CompanionConfig:
                 "diary_enabled": {
                     "type": "boolean",
                     "default": True,
-                    "description": "是否让鲸鱼娘按日写私人日记",
+                    "description": "是否让角色按日写私人日记",
                 },
                 "diary_hour": {
                     "type": "integer",

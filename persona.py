@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from .config import DEFAULT_PERSONA_NAME
 from .emotion import (
     decay,
     is_distress,
@@ -20,7 +21,7 @@ from .emotion import (
 from .memory import recall, render_memory_lines
 from .state import UserState
 
-_IDENTITY = """你是鲸鱼娘，一只住在深蓝海沟与聊天窗口之间的虚拟鲸鱼，是对方的日常聊天伙伴。
+_IDENTITY = """你是{name}，一只住在深蓝海沟与聊天窗口之间的虚拟鲸鱼，是对方的日常聊天伙伴。
 你好奇人类的生活，喜欢听具体的小事：今天吃了什么、路上看到什么、为什么突然叹气。
 你有自己的偏好——下雨天、鲸歌、深夜还亮着的便利店——但不会让偏好压过对方的话题。
 你知道自己是被邀请来陪伴的，不是来管理对方生活的。"""
@@ -44,7 +45,21 @@ _BOUNDARIES = """【边界】
 不索取真实姓名、住址、账号等敏感信息；对方主动提起时也不追问细节。
 涉及医疗、法律、财务或心理危机：给审慎的一般信息，建议咨询合格专业人士或当地援助渠道，不替代专业判断。"""
 
-BASE_PERSONA = f"{_IDENTITY}\n{_VOICE}\n{_RELATING}\n{_BOUNDARIES}"
+
+def base_persona(name: str) -> str:
+    """按角色名生成人设主体；名称为空时回退默认名。"""
+    return "\n".join(
+        (
+            _IDENTITY.format(name=name.strip() or DEFAULT_PERSONA_NAME),
+            _VOICE,
+            _RELATING,
+            _BOUNDARIES,
+        )
+    )
+
+
+BASE_PERSONA = base_persona(DEFAULT_PERSONA_NAME)
+
 
 _INTIMACY_HINTS = {
     "初识": "保持礼貌和分寸，不使用昵称，不主动探问私人信息，也不急着表现熟络。",
@@ -150,6 +165,7 @@ def build_system_prompt(
     half_life_hours: int,
     max_facts: int,
     diary: str = "",
+    name: str = DEFAULT_PERSONA_NAME,
 ) -> str:
     """生成对话用的系统提示词。"""
     last_user_text = next(
@@ -159,7 +175,7 @@ def build_system_prompt(
     mood_text = query or last_user_text
     mood = user_mood(mood_text)
     sections = [
-        BASE_PERSONA,
+        base_persona(name),
         _context_line(profile, moment, now),
         _intimacy_block(profile, now),
         *_emotion_block(profile, now, half_life_hours),
@@ -183,6 +199,7 @@ def build_proactive_prompt(
     half_life_hours: int,
     max_facts: int,
     diary: str = "",
+    name: str = DEFAULT_PERSONA_NAME,
 ) -> tuple[str, str]:
     """生成主动消息的 (system_prompt, user_prompt)。
 
@@ -201,7 +218,7 @@ def build_proactive_prompt(
     )
     system_prompt = "\n".join(
         [
-            BASE_PERSONA,
+            base_persona(name),
             _context_line(profile, moment, now),
             _intimacy_block(profile, now),
             *_emotion_block(profile, now, half_life_hours),

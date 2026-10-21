@@ -9,6 +9,8 @@ def test_defaults_are_conservative() -> None:
 
     assert config.enabled is True
     assert config.private_targets == []
+    assert config.private_auto_reply is True
+    assert config.persona_name == "鲸鱼娘"
     assert config.interval_hours == 8
     assert config.idle_minutes == 60
     assert config.daily_limit == 2
@@ -41,6 +43,7 @@ def test_unknown_legacy_fields_are_ignored() -> None:
         ({"diary_max_entries": 4}, ValueError),
         ({"private_targets": "123"}, TypeError),
         ({"enabled": "yes"}, TypeError),
+        ({"persona_name": 123}, TypeError),
     ],
 )
 def test_invalid_values_are_rejected(kwargs: dict, error: type[Exception]) -> None:
@@ -61,5 +64,7 @@ def test_schema_covers_memory_and_emotion_fields() -> None:
     assert "emotion_decay_hours" in properties
     assert "memory_retention_days" in properties
     assert {"diary_enabled", "diary_hour", "diary_max_entries"} <= set(properties)
+    assert "private_auto_reply" in properties
+    assert "persona_name" in properties
     assert "group_targets" not in properties
     assert CompanionConfig.model_dump(CompanionConfig())["memory_facts"] == 24

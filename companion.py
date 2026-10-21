@@ -79,14 +79,14 @@ class CompanionEngine:
             profile.emotion, text, timestamp, config.emotion_decay_hours
         )
         add_turn(profile, "user", text, timestamp, config.memory_turns)
-        for fact in extract_facts(text):
+        for fact in extract_facts(text, name=config.persona_name):
             add_fact(profile, fact, timestamp, config.memory_facts)
         return profile
 
     def observe_bot_message(
         self, user_id: str, text: str, now: float | None = None
     ) -> None:
-        """记录鲸鱼娘发出的内容，供下次承接话题。"""
+        """记录角色发出的内容，供下次承接话题。"""
         timestamp = self.now() if now is None else now
         profile = self.store.get(user_id, timestamp)
         add_turn(profile, "assistant", text, timestamp, self.config.memory_turns)
@@ -117,6 +117,7 @@ class CompanionEngine:
         now: float | None = None,
         *,
         diary: str = "",
+        name: str | None = None,
     ) -> str:
         timestamp = self.now() if now is None else now
         profile = self.store.get(user_id, timestamp)
@@ -128,10 +129,16 @@ class CompanionEngine:
             half_life_hours=self.config.emotion_decay_hours,
             max_facts=min(6, self.config.memory_facts),
             diary=diary,
+            name=name or self.config.persona_name,
         )
 
     def proactive_prompt(
-        self, user_id: str, now: float | None = None, *, diary: str = ""
+        self,
+        user_id: str,
+        now: float | None = None,
+        *,
+        diary: str = "",
+        name: str | None = None,
     ) -> tuple[str, str]:
         timestamp = self.now() if now is None else now
         profile = self.store.get(user_id, timestamp)
@@ -142,6 +149,7 @@ class CompanionEngine:
             half_life_hours=self.config.emotion_decay_hours,
             max_facts=min(4, self.config.memory_facts),
             diary=diary,
+            name=name or self.config.persona_name,
         )
 
     def emotion_label(self, user_id: str, now: float | None = None) -> str:

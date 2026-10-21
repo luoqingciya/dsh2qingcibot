@@ -118,9 +118,11 @@ async def test_on_load_registers_private_matchers_and_schedule(plugin) -> None:
 
     await plugin.on_load()
 
-    assert len(plugin.matchers) == 2
+    assert len(plugin.matchers) == 3
     assert plugin.matchers[0].priority == 0
     assert plugin.matchers[0].block is False
+    assert plugin.matchers[2].priority == 10
+    assert plugin.matchers[2].block is True
     assert scheduler.jobs[0]["job_id"] == "proactive_companionship"
     assert scheduler.jobs[0]["minutes"] == 5
 
@@ -493,6 +495,90 @@ async def test_chat_prompt_includes_latest_diary(plugin) -> None:
     await plugin._handle_command(private_ctx("今天有点累", message_id="m2"))
 
     assert "【最近的日记】" in plugin.llm.calls[0]["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_rule_only_matches_target_private_text(plugin) -> None:
+    plugin.plugin_config = CompanionConfig(private_targets=["123456"])
+    rule = plugin._auto_reply_rule()
+
+    target = MatcherContext(
+        user_id="123456", message_type="private", plain_text="今天好累"
+    )
+    other = MatcherContext(user_id="999", message_type="private", plain_text="今天好累")
+    command = MatcherContext(
+        user_id="123456", message_type="private", plain_text="/dsh 你好"
+    )
+
+    assert await rule.check(None, {}, target) is True
+    assert await rule.check(None, {}, other) is False
+    assert await rule.check(None, {}, command) is False
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_rule_respects_switch(plugin) -> None:
+    plugin.plugin_config = CompanionConfig(
+        private_targets=["123456"], private_auto_reply=False
+    )
+    rule = plugin._auto_reply_rule()
+    ctx = MatcherContext(user_id="123456", message_type="private", plain_text="在吗")
+
+    assert await rule.check(None, {}, ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_auto_reply_uses_plugin_persona(plugin) -> None:
+    plugin.plugin_config = CompanionConfig(private_targets=["123456"])
+    ctx = MatcherContext(
+        user_id="123456",
+        message_type="private",
+        plain_text="今天好累",
+        message_id="m1",
+    )
+
+    reply = await plugin._handle_private_chat(ctx)
+
+    assert reply == "鲸鱼娘来和你打个招呼。"
+    assert "你是鲸鱼娘" in plugin.llm.calls[0]["system_prompt"]
+    assert plugin.engine.store.peek("123456").interactions == 1
+
+
+@pytest.mark.asyncio
+async def test_diagnose_command_reports_persona_source(plugin) -> None:
+    plugin.plugin_config = CompanionConfig(private_targets=["123456"])
+
+    text = await plugin._handle_command(private_ctx("诊断"))
+
+    assert plugin.version in text
+    assert "插件注入" in text
+    assert "接管白名单私聊：开" in text
+
+
+@pytest.mark.asyncio
+async def test_command_exception_returns_fallback(plugin, monkeypatch) -> None:
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(plugin.engine, "system_prompt", boom)
+
+    reply = await plugin._handle_command(private_ctx("你好"))
+
+    assert "走神" in reply
+
+
+@pytest.mark.asyncio
+async def test_custom_persona_name_applies_to_help_prompt_and_diagnose(plugin) -> None:
+    plugin.plugin_config = CompanionConfig(
+        private_targets=["123456"], persona_name="小鲸"
+    )
+
+    help_reply = await plugin._handle_command(private_ctx("帮助"))
+    await plugin._handle_command(private_ctx("你好", message_id="m1"))
+    diagnose = await plugin._handle_command(private_ctx("诊断"))
+
+    assert "小鲸" in help_reply
+    assert "你是小鲸" in plugin.llm.calls[0]["system_prompt"]
+    assert "角色名：小鲸" in diagnose
 
 
 @pytest.mark.asyncio

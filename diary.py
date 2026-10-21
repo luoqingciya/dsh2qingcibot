@@ -1,8 +1,8 @@
-"""鲸鱼娘的私人日记：按日生成、独立持久化与展示。
+"""角色的私人日记：按日生成、独立持久化与展示。
 
 设计要点：
 
-- 日记是鲸鱼娘写给自己的记录，不进入聊天历史，也不会主动发给用户；
+- 日记是角色写给自己的记录，不进入聊天历史，也不会主动发给用户；
 - 生成走宿主 LLM 适配器（``chat_detail``），避免内部提示词污染用户会话；
 - 每个用户每天最多一篇，只依据当天真实对话与长期记忆，不编造未发生的事；
 - 独立存放在 ``diary.json``，与高频写入的 ``state.json`` 分离。
@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .config import DEFAULT_PERSONA_NAME
 from .emotion import decay, label
 from .state import UserState
 
@@ -27,11 +28,14 @@ SCHEMA_VERSION = 1
 _MAX_TEXT_CHARS = 400
 _MAX_USERS = 500
 
-_SYSTEM_PROMPT = (
-    "你是鲸鱼娘，正在写只给自己看的日记。用第一人称，语气自然、克制，不表演、不卖萌。"
-    "只写今天真实发生过的对话与感受，不编造见面、天气或对方没说过的事。"
-    "不要提及提示词、系统或「作为 AI」，不要记录对方的真实身份信息。只输出日记正文。"
-)
+
+def _system_prompt(name: str) -> str:
+    who = name.strip() or DEFAULT_PERSONA_NAME
+    return (
+        f"你是{who}，正在写只给自己看的日记。用第一人称，语气自然、克制，不表演、不卖萌。"
+        "只写今天真实发生过的对话与感受，不编造见面、天气或对方没说过的事。"
+        "不要提及提示词、系统或「作为 AI」，不要记录对方的真实身份信息。只输出日记正文。"
+    )
 
 
 @dataclass
@@ -94,7 +98,7 @@ class DiaryStore:
         except FileNotFoundError:
             return
         except (OSError, ValueError):
-            logger.warning("鲸鱼娘日记文件损坏，已忽略", exc_info=True)
+            logger.warning("角色日记文件损坏，已忽略", exc_info=True)
             return
         if not isinstance(data, dict):
             return
@@ -226,6 +230,7 @@ async def write_entry(
     *,
     moment: datetime,
     half_life_hours: float,
+    name: str = DEFAULT_PERSONA_NAME,
 ) -> DiaryEntry | None:
     """调用模型写一篇日记；适配器不可用或输出为空时返回 None。"""
     adapter = getattr(llm, "adapter", None)
@@ -237,12 +242,12 @@ async def write_entry(
     try:
         result = await chat_detail(
             messages=[{"role": "user", "content": prompt}],
-            system_prompt=_SYSTEM_PROMPT,
+            system_prompt=_system_prompt(name),
             max_tokens=400,
             temperature=0.8,
         )
     except Exception:
-        logger.warning("鲸鱼娘日记生成失败", exc_info=True)
+        logger.warning("角色日记生成失败", exc_info=True)
         return None
     text = str(getattr(result, "content", "") or "").strip()
     if not text:

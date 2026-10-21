@@ -1,4 +1,4 @@
-"""DeepSeek 鲸鱼娘主动陪伴插件，适配 Qingci-Bot。
+"""DeepSeek 虚拟陪伴插件，适配 Qingci-Bot。
 
 本文件只保留插件类与 SDK 接线；配置、状态、记忆、情绪、提示词、
 命令与主动发送分别位于同目录的独立模块，便于测试与维护。
@@ -17,6 +17,7 @@ from typing import Any
 from qingci_plugin_sdk import (
     MatcherContext,
     PluginBase,
+    Rule,
     is_private,
     on_command,
     on_message,
@@ -61,14 +62,12 @@ _PERSIST_DELAY_SECONDS = 3.0
 
 
 class WhaleCompanionPlugin(PluginBase):
-    """仅面向私聊的鲸鱼娘主动陪伴插件。"""
+    """仅面向私聊的虚拟陪伴插件。"""
 
     name = "whale_companion"
-    version = "1.3.0"
+    version = "1.4.0"
     author = "Qingci-Bot"
-    description = (
-        "DeepSeek 鲸鱼娘主动陪伴：私聊对话、长期记忆、情绪感知、私人日记与管理页"
-    )
+    description = "DeepSeek 虚拟陪伴：私聊接管、长期记忆、情绪感知、私人日记与管理页"
     category = "chat"
 
     # 宿主通过 getattr(type(plugin), "Config") 读取并构造
@@ -94,7 +93,7 @@ class WhaleCompanionPlugin(PluginBase):
             try:
                 return CompanionConfig.model_validate(raw)
             except Exception:
-                logger.warning("鲸鱼娘配置无效，回退至安全默认值", exc_info=True)
+                logger.warning("陪伴插件配置无效，回退至安全默认值", exc_info=True)
         return CompanionConfig()
 
     def _ensure_runtime(self) -> CompanionEngine:
@@ -117,6 +116,27 @@ class WhaleCompanionPlugin(PluginBase):
     @staticmethod
     def _targets(config: CompanionConfig) -> list[str]:
         return list(dict.fromkeys(value for value in config.private_targets if value))
+
+    def _persona_name(self) -> str:
+        return self._config().persona_name
+
+    def _auto_reply_rule(self) -> Rule:
+        """白名单用户、非命令的普通私聊才由本插件接管。"""
+
+        async def check(bot: Any, event: dict, ctx: MatcherContext) -> bool:
+            if ctx.message_type != "private":
+                return False
+            text = ctx.plain_text.strip()
+            if not text or text.startswith("/"):
+                return False
+            config = self._config()
+            if not config.private_auto_reply:
+                return False
+            return str(ctx.user_id) in {
+                str(value).strip() for value in config.private_targets
+            }
+
+        return Rule(check)
 
     async def _persist(self, *, force: bool = True) -> None:
         """保存状态。
@@ -148,7 +168,7 @@ class WhaleCompanionPlugin(PluginBase):
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("鲸鱼娘状态延迟保存失败")
+            logger.exception("陪伴插件状态延迟保存失败")
 
     def _cancel_pending_persist(self) -> None:
         task = self._persist_task
@@ -176,20 +196,28 @@ class WhaleCompanionPlugin(PluginBase):
                 "dsh",
                 rule=is_private(),
                 priority=1,
-                description="和鲸鱼娘聊天、管理记忆与主动陪伴",
+                description=f"和{self._persona_name()}聊天、管理记忆与主动陪伴",
             )(self._handle_command)
         )
+        self.matchers.append(
+            on_message(
+                rule=self._auto_reply_rule(),
+                priority=10,
+                block=True,
+                description=f"用{self._persona_name()}人设接管白名单用户的普通私聊",
+            )(self._handle_private_chat)
+        )
         self._register_schedule()
-        self.register_page("鲸鱼娘", icon="🐋")
+        self.register_page(self._persona_name(), icon="🐋")
         self.register_api(
             "stats",
             self._api_stats,
             methods=["GET"],
-            description="鲸鱼娘陪伴统计",
+            description="陪伴统计",
         )
         self._warn_if_not_deepseek()
         logger.info(
-            "鲸鱼娘陪伴插件已加载（用户 %d 位，记忆 %d 条）",
+            "陪伴插件已加载（用户 %d 位，记忆 %d 条）",
             len(self._store) if self._store is not None else 0,
             sum(len(profile.facts) for profile in self._store.items())
             if self._store is not None
@@ -204,13 +232,13 @@ class WhaleCompanionPlugin(PluginBase):
         model = str(getattr(llm_config, "model", "") or "").lower()
         if "deepseek" not in provider and "deepseek" not in model:
             logger.warning(
-                "鲸鱼娘通过 Qingci-Bot 共用 LLM 配置运行；当前模型未标识为 DeepSeek。"
+                "陪伴插件通过 Qingci-Bot 共用 LLM 配置运行；当前模型未标识为 DeepSeek。"
                 "如需使用 DeepSeek，请在 Qingci-Bot 的 LLM 配置中选择 DeepSeek。"
             )
 
     def _register_schedule(self) -> None:
         if self.scheduler is None:
-            logger.warning("调度器未启用，鲸鱼娘主动陪伴不可用；聊天命令仍可使用")
+            logger.warning("调度器未启用，主动陪伴不可用；聊天命令仍可使用")
             return
         self.scheduler.add_job(
             self._proactive_tick,
@@ -226,7 +254,7 @@ class WhaleCompanionPlugin(PluginBase):
         self._cancel_pending_persist()
         await self._persist()
         await self._persist_diary()
-        logger.info("鲸鱼娘陪伴插件已卸载")
+        logger.info("陪伴插件已卸载")
 
     async def on_disable(self) -> None:
         if self.scheduler is not None:
@@ -269,16 +297,35 @@ class WhaleCompanionPlugin(PluginBase):
 
     # ---- 命令处理 ----
 
+    async def _handle_private_chat(self, ctx: MatcherContext) -> str | None:
+        """白名单用户的普通私聊：用插件人设回复。"""
+        text = ctx.plain_text.strip()
+        if not text:
+            return None
+        try:
+            return await self._chat_reply(ctx, text)
+        except Exception:
+            logger.exception("陪伴插件私聊回复失败")
+            return f"{self._persona_name()}刚才走神了，能再说一次吗？"
+
     async def _handle_command(self, ctx: MatcherContext) -> str:
+        """命令入口：异常时返回兜底文案，避免落到框架内置 chat 的人格。"""
+        try:
+            return await self._handle_command_impl(ctx)
+        except Exception:
+            logger.exception("陪伴插件命令处理失败")
+            return f"{self._persona_name()}刚才走神了，能再说一次吗？"
+
+    async def _handle_command_impl(self, ctx: MatcherContext) -> str:
         """处理私聊中的 /dsh 对话、记忆管理与主动陪伴控制。"""
         if ctx.message_type != "private":
-            return "鲸鱼娘目前只支持私聊，请私信我继续聊天。"
+            return f"{self._persona_name()}目前只支持私聊，请私信我继续聊天。"
         user_id = str(ctx.user_id)
         engine = self.engine
         command = commands.parse(ctx.args)
 
         if command.kind == "help":
-            return commands.HELP_TEXT
+            return commands.help_text(self._persona_name())
 
         if command.kind == "status":
             profile = engine.touch(user_id)
@@ -330,31 +377,63 @@ class WhaleCompanionPlugin(PluginBase):
             await self._persist()
             return f"记住了：{command.argument}"
 
-        if self.llm is None:
-            return "鲸鱼娘现在暂时联系不上脑波网络，请稍后再试。"
+        if command.kind == "diagnose":
+            return self._diagnose_text(user_id)
 
-        message = command.argument
-        self._observe_user_once(ctx, message)
+        return await self._chat_reply(ctx, command.argument)
+
+    async def _chat_reply(self, ctx: MatcherContext, message: str) -> str:
+        """统一的对话入口：记录、调用 LLM、写回记忆与状态。"""
+        user_id = str(ctx.user_id)
+        engine = self.engine
+        name = self._persona_name()
+        if self.llm is None:
+            return f"{name}现在暂时联系不上脑波网络，请稍后再试。"
+
+        text = message.strip() or commands.default_chat_message(name)
+        self._observe_user_once(ctx, text)
         reply = await self.llm.chat(
-            message=message,
+            message=text,
             message_type="private",
             group_id=0,
             user_id=user_id,
             user_name=ctx.sender_name,
             system_prompt=engine.system_prompt(
-                user_id, message, diary=self._diary_text(user_id)
+                user_id, text, diary=self._diary_text(user_id)
             ),
         )
         if not reply:
             await self._persist()
-            return "鲸鱼娘刚才没听清，能再和我说一次吗？"
+            return f"{name}刚才没听清，能再和我说一次吗？"
 
-        text = str(reply)
-        engine.observe_bot_message(user_id, text)
+        reply_text = str(reply)
+        engine.observe_bot_message(user_id, reply_text)
         if engine.should_consolidate(user_id):
             await engine.consolidate(user_id, self.llm)
         await self._persist()
-        return text
+        return reply_text
+
+    def _diagnose_text(self, user_id: str) -> str:
+        """输出人设生效情况，便于确认消息由插件而非框架 chat 处理。"""
+        config = self._config()
+        llm_config = (
+            getattr(self.config, "llm", None) if self.config is not None else None
+        )
+        provider = str(getattr(llm_config, "provider", "") or "未知")
+        model = str(getattr(llm_config, "model", "") or "未知")
+        prompt_head = self.engine.system_prompt(
+            user_id, "诊断", diary=self._diary_text(user_id)
+        ).splitlines()[0][:60]
+        return (
+            f"插件：{self.name} v{self.version}\n"
+            f"角色名：{self._persona_name()}\n"
+            f"接管白名单私聊：{'开' if config.private_auto_reply else '关'}\n"
+            f"当前模型：{provider}/{model}\n"
+            "人设来源：插件注入（不是框架默认人格）\n"
+            f"提示词开头：{prompt_head}\n"
+            "若普通私聊仍按框架人格回复，请确认用户已加入 private_targets，"
+            "并检查插件是否加载成功。"
+        )
 
     # ---- 日记 ----
 
@@ -391,6 +470,7 @@ class WhaleCompanionPlugin(PluginBase):
             now,
             moment=datetime.now().astimezone(),
             half_life_hours=self._config().emotion_decay_hours,
+            name=self._persona_name(),
         )
         if entry is None:
             return None
@@ -418,6 +498,7 @@ class WhaleCompanionPlugin(PluginBase):
                 time.time(),
                 moment=now,
                 half_life_hours=self._config().emotion_decay_hours,
+                name=self._persona_name(),
             )
             if entry is None:
                 continue
@@ -472,7 +553,7 @@ class WhaleCompanionPlugin(PluginBase):
         if not config.enabled:
             return
         if self.llm is None or self.connection is None:
-            logger.debug("LLM 或连接尚未就绪，跳过鲸鱼娘主动陪伴")
+            logger.debug("LLM 或连接尚未就绪，跳过主动陪伴")
             return
 
         if not self._within_active_hours(

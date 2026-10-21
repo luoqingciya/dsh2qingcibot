@@ -67,6 +67,31 @@ def test_familiarity_stages(
     assert familiarity(profile, NOW) == expected
 
 
+def test_custom_persona_name_is_used(tmp_path) -> None:
+    profile = make_profile(tmp_path)
+
+    prompt = build_system_prompt(
+        profile,
+        "你好",
+        NOW,
+        moment=MOMENT,
+        half_life_hours=12,
+        max_facts=6,
+        name="小鲸",
+    )
+    system_prompt, _ = build_proactive_prompt(
+        profile,
+        NOW,
+        moment=MOMENT,
+        half_life_hours=12,
+        max_facts=4,
+        name="小鲸",
+    )
+
+    assert "你是小鲸" in prompt
+    assert "你是小鲸" in system_prompt
+
+
 def test_system_prompt_includes_context_memory_emotion_and_boundaries(tmp_path) -> None:
     profile = make_profile(tmp_path, interactions=1)
     profile.turns = [Turn(role="user", text="我喜欢下雨天", ts=NOW)]

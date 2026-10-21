@@ -9,7 +9,7 @@ from dsh2qingcibot import commands
 @pytest.mark.parametrize(
     ("args", "kind", "argument"),
     [
-        ("", "chat", commands.DEFAULT_CHAT_MESSAGE),
+        ("", "chat", ""),
         ("帮助", "help", ""),
         ("HELP", "help", ""),
         ("状态", "status", ""),
@@ -24,6 +24,8 @@ from dsh2qingcibot import commands
         ("日记 写", "diary", "写"),
         ("日记 清空", "diary", "清空"),
         ("diary write", "diary", "write"),
+        ("诊断", "diagnose", ""),
+        ("diag", "diagnose", ""),
         ("忘记", "forget", ""),
         ("忘记 考试", "forget", "考试"),
         ("记住 我喜欢下雨天", "remember", "我喜欢下雨天"),
@@ -35,6 +37,12 @@ def test_parse_command(args: str, kind: str, argument: str) -> None:
 
     assert command.kind == kind
     assert command.argument == argument
+
+
+def test_help_and_default_message_follow_persona_name() -> None:
+    assert "小鲸" in commands.help_text("小鲸")
+    assert "小鲸最近的日记" in commands.help_text("小鲸")
+    assert commands.default_chat_message("小鲸") == "小鲸，陪我聊聊天吧。"
 
 
 def test_status_text_reports_state() -> None:
