@@ -1,13 +1,17 @@
-"""DeepSeek 鲸鱼娘主动陪伴插件，适配 Qingci-Bot。"""
+"""DeepSeek 鲸鱼娘主动陪伴插件，适配 Qingci-Bot。
+
+本文件只保留插件类与 SDK 接线；配置、状态、记忆、情绪、提示词、
+命令与主动发送分别位于同目录的独立模块，便于测试与维护。
+"""
 
 from __future__ import annotations
 
 import asyncio
-import json
+import importlib
 import logging
+import sys
 import time
-from datetime import datetime
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any
 
 from qingci_plugin_sdk import (
@@ -18,267 +22,144 @@ from qingci_plugin_sdk import (
     on_message,
 )
 
+# 插件热重载时宿主只 reload 包入口（plugins.<name>），子模块仍留在
+# sys.modules 中。按依赖顺序重新加载，避免改了子模块却仍跑旧代码。
+_SUBMODULES = (
+    "config",
+    "emotion",
+    "state",
+    "diary",
+    "memory",
+    "persona",
+    "commands",
+    "companion",
+    "proactive",
+)
+
+
+def _reload_submodules() -> None:
+    for name in _SUBMODULES:
+        module = sys.modules.get(f"{__name__}.{name}")
+        if module is not None:
+            importlib.reload(module)
+
+
+_reload_submodules()
+
+from . import commands
+from . import diary as diary_ops
+from .companion import CompanionEngine
+from .config import CompanionConfig
+from .diary import DiaryEntry, DiaryStore
+from .proactive import consolidate_targets, send_due_messages
+from .state import StateStore
+
 logger = logging.getLogger("qingci-bot.plugin.whale_companion")
 
-WHALE_SYSTEM_PROMPT = """你是鲸鱼娘，一位温柔、活泼、可靠的虚拟鲸鱼娘，也是用户的日常聊天伙伴。
-用自然、简洁的中文回应，可以偶尔加入海洋意象或轻松俏皮的表达，但不要每句话都卖萌。
-认真倾听对方，优先回应对方真正表达的内容；不要编造共同经历、事实或自己拥有现实生活。
-你是虚拟角色，不应声称自己是真人、拥有真实感受或能在聊天之外观察用户。
-保持友善和边界感，不制造焦虑、不诱导用户依赖、不索要回复；用户想结束话题时尊重其选择。
-涉及医疗、法律、财务等重要决定时，提供审慎的一般信息并建议咨询合格专业人士。
-"""
+# 活跃消息触发的状态保存合并窗口（秒）；显式命令与主动发送仍立即落盘
+_PERSIST_DELAY_SECONDS = 3.0
 
 
 class WhaleCompanionPlugin(PluginBase):
     """仅面向私聊的鲸鱼娘主动陪伴插件。"""
 
     name = "whale_companion"
-    version = "1.0.0"
+    version = "1.3.0"
     author = "Qingci-Bot"
-    description = "DeepSeek 鲸鱼娘主动陪伴与轻量对话"
+    description = (
+        "DeepSeek 鲸鱼娘主动陪伴：私聊对话、长期记忆、情绪感知、私人日记与管理页"
+    )
     category = "chat"
 
-    class Config:
-        """插件运行配置；目标列表为空时不会主动发送任何消息。"""
-
-        enabled: bool
-        private_targets: list[str]
-        interval_hours: int
-        idle_minutes: int
-        daily_limit: int
-        active_start_hour: int
-        active_end_hour: int
-
-        def __init__(
-            self,
-            enabled: bool = True,
-            private_targets: list[str] | None = None,
-            interval_hours: int = 8,
-            idle_minutes: int = 60,
-            daily_limit: int = 2,
-            active_start_hour: int = 9,
-            active_end_hour: int = 22,
-            **_extra: Any,
-        ) -> None:
-            self.enabled = self._boolean("enabled", enabled)
-            self.private_targets = self._targets("private_targets", private_targets)
-            self.interval_hours = self._integer(
-                "interval_hours", interval_hours, 1, 168
-            )
-            self.idle_minutes = self._integer("idle_minutes", idle_minutes, 5, 1440)
-            self.daily_limit = self._integer("daily_limit", daily_limit, 1, 5)
-            self.active_start_hour = self._integer(
-                "active_start_hour", active_start_hour, 0, 23
-            )
-            self.active_end_hour = self._integer(
-                "active_end_hour", active_end_hour, 0, 23
-            )
-
-        @staticmethod
-        def _boolean(name: str, value: Any) -> bool:
-            if not isinstance(value, bool):
-                raise TypeError(f"{name} 必须是布尔值")
-            return value
-
-        @staticmethod
-        def _integer(name: str, value: Any, minimum: int, maximum: int) -> int:
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise TypeError(f"{name} 必须是整数")
-            if not minimum <= value <= maximum:
-                raise ValueError(f"{name} 必须介于 {minimum} 和 {maximum} 之间")
-            return value
-
-        @staticmethod
-        def _targets(name: str, values: list[str] | None) -> list[str]:
-            if values is None:
-                return []
-            if not isinstance(values, (list, tuple)):
-                raise TypeError(f"{name} 必须是 ID 列表")
-            return [str(value).strip() for value in values if str(value).strip()]
-
-        @classmethod
-        def model_validate(cls, values: dict[str, Any]) -> WhaleCompanionPlugin.Config:
-            return cls(**values)
-
-        def model_dump(self) -> dict[str, Any]:
-            return {
-                "enabled": self.enabled,
-                "private_targets": list(self.private_targets),
-                "interval_hours": self.interval_hours,
-                "idle_minutes": self.idle_minutes,
-                "daily_limit": self.daily_limit,
-                "active_start_hour": self.active_start_hour,
-                "active_end_hour": self.active_end_hour,
-            }
-
-        @classmethod
-        def model_json_schema(cls) -> dict[str, Any]:
-            return {
-                "type": "object",
-                "properties": {
-                    "enabled": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "启用定时主动陪伴",
-                    },
-                    "private_targets": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "default": [],
-                        "description": "允许主动私聊的用户 ID 列表；请用字符串填写",
-                    },
-                    "interval_hours": {
-                        "type": "integer",
-                        "default": 8,
-                        "minimum": 1,
-                        "maximum": 168,
-                        "description": "同一目标两次主动消息的最短间隔（小时）",
-                    },
-                    "idle_minutes": {
-                        "type": "integer",
-                        "default": 60,
-                        "minimum": 5,
-                        "maximum": 1440,
-                        "description": "目标无新消息后等待的分钟数",
-                    },
-                    "daily_limit": {
-                        "type": "integer",
-                        "default": 2,
-                        "minimum": 1,
-                        "maximum": 5,
-                        "description": "每个目标每天最多主动消息数",
-                    },
-                    "active_start_hour": {
-                        "type": "integer",
-                        "default": 9,
-                        "minimum": 0,
-                        "maximum": 23,
-                        "description": "主动消息允许开始的本地小时（含）",
-                    },
-                    "active_end_hour": {
-                        "type": "integer",
-                        "default": 22,
-                        "minimum": 0,
-                        "maximum": 23,
-                        "description": "主动消息允许结束的本地小时（不含）",
-                    },
-                },
-                "required": [],
-            }
+    # 宿主通过 getattr(type(plugin), "Config") 读取并构造
+    Config = CompanionConfig
 
     def __init__(self) -> None:
         super().__init__()
-        self._state: dict[str, Any] = {
-            "last_sent": {},
-            "sent_today": {},
-            "opt_out": [],
-        }
-        self._last_activity: dict[str, float] = {}
+        self._store: StateStore | None = None
+        self._engine: CompanionEngine | None = None
+        self._diary: DiaryStore | None = None
         self._started_at = time.time()
         self._tick_lock = asyncio.Lock()
-        self._state_lock = asyncio.Lock()
+        self._last_observed: dict[str, str] = {}
+        self._persist_task: asyncio.Task[None] | None = None
 
-    def _config(self) -> Config:
+    # ---- 运行时装配 ----
+
+    def _config(self) -> CompanionConfig:
         raw = self.plugin_config
-        if isinstance(raw, self.Config):
+        if isinstance(raw, CompanionConfig):
             return raw
         if isinstance(raw, dict):
             try:
-                return self.Config.model_validate(raw)
+                return CompanionConfig.model_validate(raw)
             except Exception:
                 logger.warning("鲸鱼娘配置无效，回退至安全默认值", exc_info=True)
-        return self.Config()
+        return CompanionConfig()
+
+    def _ensure_runtime(self) -> CompanionEngine:
+        """惰性创建状态存储与业务引擎（on_load 与测试共用同一入口）。"""
+        if self._engine is not None:
+            return self._engine
+        if self._store is None:
+            self._store = StateStore(self.data_dir / "state.json")
+            self._store.load()
+        if self._diary is None:
+            self._diary = DiaryStore(self.data_dir / "diary.json")
+            self._diary.load()
+        self._engine = CompanionEngine(self._store, self._config)
+        return self._engine
+
+    @property
+    def engine(self) -> CompanionEngine:
+        return self._ensure_runtime()
 
     @staticmethod
-    def _targets(config: Config) -> list[str]:
+    def _targets(config: CompanionConfig) -> list[str]:
         return list(dict.fromkeys(value for value in config.private_targets if value))
 
-    @staticmethod
-    def _target_key(target_id: str) -> str:
-        return f"private:{target_id}"
+    async def _persist(self, *, force: bool = True) -> None:
+        """保存状态。
 
-    def _state_path(self) -> Path:
-        return self.data_dir / "state.json"
-
-    def _load_state(self) -> None:
-        path = self._state_path()
-        try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(loaded, dict):
-                raise TypeError("state.json 顶层必须为对象")
-            raw_last_sent = loaded.get("last_sent", {})
-            last_sent: dict[str, float] = {}
-            if isinstance(raw_last_sent, dict):
-                for key, value in raw_last_sent.items():
-                    if not str(key).startswith("private:"):
-                        continue
-                    try:
-                        timestamp = float(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if timestamp >= 0:
-                        last_sent[str(key)] = timestamp
-
-            raw_sent_today = loaded.get("sent_today", {})
-            sent_today: dict[str, dict[str, Any]] = {}
-            if isinstance(raw_sent_today, dict):
-                for key, value in raw_sent_today.items():
-                    if not str(key).startswith("private:") or not isinstance(
-                        value, dict
-                    ):
-                        continue
-                    try:
-                        count = max(0, int(value.get("count", 0)))
-                    except (TypeError, ValueError):
-                        continue
-                    sent_today[str(key)] = {
-                        "date": str(value.get("date", "")),
-                        "count": count,
-                    }
-
-            raw_opt_out = loaded.get("opt_out", [])
-            opt_out = (
-                [
-                    str(value)
-                    for value in raw_opt_out
-                    if str(value).startswith("private:")
-                ]
-                if isinstance(raw_opt_out, list)
-                else []
-            )
-            self._state = {
-                "last_sent": last_sent,
-                "sent_today": sent_today,
-                "opt_out": opt_out,
-            }
-        except FileNotFoundError:
+        活跃消息只标记为待保存，3 秒内的多次变更合并成一次写入；
+        显式命令、主动发送与卸载走强制保存，保证用户可见操作立即落盘。
+        """
+        if self._store is None:
             return
-        except (OSError, TypeError, ValueError):
-            logger.warning("鲸鱼娘状态文件读取失败，将使用空状态", exc_info=True)
-            self._state = {"last_sent": {}, "sent_today": {}, "opt_out": []}
+        if force:
+            self._cancel_pending_persist()
+            await self._store.save_async()
+            return
+        if self._persist_task is None or self._persist_task.done():
+            self._persist_task = asyncio.create_task(self._delayed_persist())
 
-    def _write_state(self, snapshot: dict[str, Any]) -> None:
-        path = self._state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(snapshot, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+    async def _persist_diary(self) -> None:
+        if self._diary is not None:
+            await self._diary.save_async()
 
-    def _state_snapshot(self) -> dict[str, Any]:
-        return {
-            "last_sent": dict(self._state["last_sent"]),
-            "sent_today": {
-                key: dict(value) if isinstance(value, dict) else value
-                for key, value in self._state["sent_today"].items()
-            },
-            "opt_out": list(self._state["opt_out"]),
-        }
+    def _diary_text(self, user_id: str) -> str:
+        return self._diary.latest_text(user_id) if self._diary is not None else ""
+
+    async def _delayed_persist(self) -> None:
+        try:
+            await asyncio.sleep(_PERSIST_DELAY_SECONDS)
+            if self._store is not None:
+                await self._store.save_async()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("鲸鱼娘状态延迟保存失败")
+
+    def _cancel_pending_persist(self) -> None:
+        task = self._persist_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._persist_task = None
+
+    # ---- 生命周期 ----
 
     async def on_load(self) -> None:
-        self._load_state()
+        self._ensure_runtime()
         self._started_at = time.time()
         if self.matchers is None:
             self.matchers = []
@@ -287,7 +168,7 @@ class WhaleCompanionPlugin(PluginBase):
                 rule=is_private(),
                 priority=0,
                 block=False,
-                description="记录私聊目标最近活跃时间",
+                description="记录私聊目标的活跃、对话记忆与情绪",
             )(self._track_activity)
         )
         self.matchers.append(
@@ -295,11 +176,27 @@ class WhaleCompanionPlugin(PluginBase):
                 "dsh",
                 rule=is_private(),
                 priority=1,
-                description="和鲸鱼娘聊天、管理主动陪伴",
+                description="和鲸鱼娘聊天、管理记忆与主动陪伴",
             )(self._handle_command)
         )
         self._register_schedule()
+        self.register_page("鲸鱼娘", icon="🐋")
+        self.register_api(
+            "stats",
+            self._api_stats,
+            methods=["GET"],
+            description="鲸鱼娘陪伴统计",
+        )
+        self._warn_if_not_deepseek()
+        logger.info(
+            "鲸鱼娘陪伴插件已加载（用户 %d 位，记忆 %d 条）",
+            len(self._store) if self._store is not None else 0,
+            sum(len(profile.facts) for profile in self._store.items())
+            if self._store is not None
+            else 0,
+        )
 
+    def _warn_if_not_deepseek(self) -> None:
         llm_config = (
             getattr(self.config, "llm", None) if self.config is not None else None
         )
@@ -310,7 +207,6 @@ class WhaleCompanionPlugin(PluginBase):
                 "鲸鱼娘通过 Qingci-Bot 共用 LLM 配置运行；当前模型未标识为 DeepSeek。"
                 "如需使用 DeepSeek，请在 Qingci-Bot 的 LLM 配置中选择 DeepSeek。"
             )
-        logger.info("DeepSeek 鲸鱼娘陪伴插件已加载")
 
     def _register_schedule(self) -> None:
         if self.scheduler is None:
@@ -327,6 +223,9 @@ class WhaleCompanionPlugin(PluginBase):
     async def on_unload(self) -> None:
         if self.scheduler is not None:
             self.scheduler.remove_jobs_by_owner(self.name)
+        self._cancel_pending_persist()
+        await self._persist()
+        await self._persist_diary()
         logger.info("鲸鱼娘陪伴插件已卸载")
 
     async def on_disable(self) -> None:
@@ -336,72 +235,204 @@ class WhaleCompanionPlugin(PluginBase):
     async def on_enable(self) -> None:
         self._register_schedule()
 
+    # ---- 消息记录 ----
+
+    def _observe_user_once(self, ctx: MatcherContext, text: str) -> bool:
+        """同一条消息只记录一次；返回是否真的写入了记忆。"""
+        user_id = str(ctx.user_id)
+        message_id = str(getattr(ctx, "message_id", "") or "")
+        marker = message_id or f"text:{text}"
+        if self._last_observed.get(user_id) == marker:
+            return False
+        self._last_observed[user_id] = marker
+        self.engine.observe_user_message(user_id, text)
+        return True
+
     async def _track_activity(self, ctx: MatcherContext) -> None:
-        """仅跟踪已配置私聊目标的真人消息，不生成回复或拦截其他插件。"""
+        """仅跟踪已配置私聊目标的消息，不回复、不拦截其他插件。"""
         if ctx.message_type != "private":
             return
-        if (not ctx.plain_text.strip() and not ctx.segments) or str(ctx.user_id) == str(
-            ctx.self_id
-        ):
+        text = ctx.plain_text.strip()
+        if (not text and not ctx.segments) or str(ctx.user_id) == str(ctx.self_id):
             return
-        target_id = str(ctx.user_id)
-        if target_id in {
+        # 命令文本（/dsh 或其他插件命令）不写入对话记忆；/dsh 的实际聊天
+        # 内容由命令处理器记录，避免「/dsh 状态」被当成一句对话。
+        if text.startswith("/"):
+            return
+        user_id = str(ctx.user_id)
+        if user_id not in {
             str(value).strip() for value in self._config().private_targets
         }:
-            self._last_activity[self._target_key(target_id)] = time.time()
+            return
+        if self._observe_user_once(ctx, text):
+            await self._persist(force=False)
+
+    # ---- 命令处理 ----
 
     async def _handle_command(self, ctx: MatcherContext) -> str:
-        """响应私聊中的鲸鱼娘对话命令及主动陪伴控制。"""
+        """处理私聊中的 /dsh 对话、记忆管理与主动陪伴控制。"""
         if ctx.message_type != "private":
             return "鲸鱼娘目前只支持私聊，请私信我继续聊天。"
-        args = ctx.args.strip()
-        action = args.casefold()
-        if action in {"帮助", "help", "?"}:
-            return (
-                "鲸鱼娘可以陪你聊聊天。直接发送 /dsh <内容> 开始对话；\n"
-                "发送 /dsh 状态 查看主动陪伴状态；\n"
-                "发送 /dsh 暂停 或 /dsh 继续，管理主动消息。"
+        user_id = str(ctx.user_id)
+        engine = self.engine
+        command = commands.parse(ctx.args)
+
+        if command.kind == "help":
+            return commands.HELP_TEXT
+
+        if command.kind == "status":
+            profile = engine.touch(user_id)
+            text = commands.status_text(
+                enabled=self._config().enabled,
+                opted_out=profile.opt_out,
+                emotion=engine.emotion_label(user_id),
+                memory_count=len(profile.facts),
+                interactions=profile.interactions,
             )
-        if action in {"状态", "status"}:
-            config = self._config()
-            key = self._target_key(str(ctx.user_id))
-            opted_out = key in self._state["opt_out"]
-            return (
-                f"主动陪伴：{'已启用' if config.enabled else '已关闭'}；"
-                f"本目标：{'已暂停' if opted_out else '未暂停'}。"
-                "主动消息仅发给管理员配置的目标，并遵守免打扰时段与活跃检测。"
-            )
-        if action in {"暂停", "停止", "别打扰", "关闭主动陪伴"}:
-            await self._set_opt_out(ctx, True)
+            if profile.last_error:
+                text += f"\n最近一次主动发送失败：{profile.last_error}"
+            return text
+
+        if command.kind == "pause":
+            engine.touch(user_id).opt_out = True
+            await self._persist()
             return "好，我会暂停向这个会话发送主动消息。你随时可以发送 /dsh 继续。"
-        if action in {"继续", "开启", "恢复"}:
-            await self._set_opt_out(ctx, False)
+
+        if command.kind == "resume":
+            engine.touch(user_id).opt_out = False
+            await self._persist()
             return "收到，我会恢复这个会话的主动陪伴设置；仍会遵守间隔和免打扰时段。"
+
+        if command.kind == "memory":
+            return engine.memory_digest(user_id)
+
+        if command.kind == "export":
+            return commands.export_text(engine.export_memory(user_id))
+
+        if command.kind == "diary":
+            return await self._handle_diary(user_id, command.argument)
+
+        if command.kind == "forget":
+            removed = engine.forget(user_id, command.argument)
+            diary_removed = 0
+            if not command.argument and self._diary is not None:
+                diary_removed = self._diary.clear(user_id)
+                await self._persist_diary()
+            await self._persist()
+            if not command.argument:
+                return f"已经清空 {removed} 条记忆和 {diary_removed} 篇日记。"
+            return commands.forget_text(removed)
+
+        if command.kind == "remember":
+            if not command.argument:
+                return "想让我记住什么？发送 /dsh 记住 <内容>。"
+            engine.remember(user_id, command.argument)
+            await self._persist()
+            return f"记住了：{command.argument}"
 
         if self.llm is None:
             return "鲸鱼娘现在暂时联系不上脑波网络，请稍后再试。"
-        message = args or "鲸鱼娘，陪我聊聊天吧。"
+
+        message = command.argument
+        self._observe_user_once(ctx, message)
         reply = await self.llm.chat(
             message=message,
-            message_type=ctx.message_type or "private",
-            group_id=ctx.group_id or 0,
-            user_id=ctx.user_id,
+            message_type="private",
+            group_id=0,
+            user_id=user_id,
             user_name=ctx.sender_name,
-            system_prompt=WHALE_SYSTEM_PROMPT,
+            system_prompt=engine.system_prompt(
+                user_id, message, diary=self._diary_text(user_id)
+            ),
         )
-        return reply or "鲸鱼娘刚才没听清，能再和我说一次吗？"
+        if not reply:
+            await self._persist()
+            return "鲸鱼娘刚才没听清，能再和我说一次吗？"
 
-    async def _set_opt_out(self, ctx: MatcherContext, opted_out: bool) -> None:
-        key = self._target_key(str(ctx.user_id))
-        async with self._state_lock:
-            opt_out = set(self._state["opt_out"])
-            if opted_out:
-                opt_out.add(key)
-            else:
-                opt_out.discard(key)
-            self._state["opt_out"] = sorted(opt_out)
-            snapshot = self._state_snapshot()
-        await asyncio.to_thread(self._write_state, snapshot)
+        engine.observe_bot_message(user_id, str(reply))
+        if engine.should_consolidate(user_id):
+            await engine.consolidate(user_id, self.llm)
+        await self._persist()
+        return reply
+
+    # ---- 日记 ----
+
+    async def _handle_diary(self, user_id: str, argument: str) -> str:
+        if self._diary is None:
+            return "日记还没有准备好。"
+        action = argument.strip().casefold()
+        if action in {"写", "write"}:
+            entry = await self._write_diary(user_id)
+            if entry is None:
+                return "今天还没有足够的对话可写，或者模型暂时不可用。"
+            return f"写好了：\n{entry.text}"
+        if action in {"清空", "clear"}:
+            removed = self._diary.clear(user_id)
+            await self._persist_diary()
+            return f"已经清空 {removed} 篇日记。" if removed else "本来就没有日记。"
+        entries = self._diary.entries(user_id, limit=3)
+        if not entries:
+            return "还没有日记。今天聊过之后我会在晚上写；也可以发送 /dsh 日记 写。"
+        lines = ["最近的日记："]
+        for entry in reversed(entries):
+            day = datetime.fromtimestamp(entry.ts, tz=timezone.utc).astimezone()
+            lines.append(f"· {day.strftime('%m-%d')}（{entry.mood}）{entry.text}")
+        return "\n".join(lines)
+
+    async def _write_diary(self, user_id: str) -> DiaryEntry | None:
+        if self.llm is None or self._diary is None:
+            return None
+        now = time.time()
+        profile = self.engine.store.get(user_id, now)
+        entry = await diary_ops.write_entry(
+            self.llm,
+            profile,
+            now,
+            moment=datetime.now().astimezone(),
+            half_life_hours=self._config().emotion_decay_hours,
+        )
+        if entry is None:
+            return None
+        self._diary.append(user_id, entry, limit=self._config().diary_max_entries)
+        await self._persist_diary()
+        return entry
+
+    async def _write_due_diaries(self, now: datetime) -> None:
+        """为当天有过对话、且还没写日记的用户补写日记（每 tick 最多 3 人）。"""
+        if self._diary is None or self.llm is None:
+            return
+        today = now.date().isoformat()
+        budget = 3
+        changed = False
+        for profile in self.engine.store.items():
+            if budget <= 0:
+                break
+            if today not in profile.active_dates:
+                continue
+            if self._diary.has_entry_on(profile.user_id, today):
+                continue
+            entry = await diary_ops.write_entry(
+                self.llm,
+                profile,
+                time.time(),
+                moment=now,
+                half_life_hours=self._config().emotion_decay_hours,
+            )
+            if entry is None:
+                continue
+            self._diary.append(
+                profile.user_id, entry, limit=self._config().diary_max_entries
+            )
+            budget -= 1
+            changed = True
+        if changed:
+            await self._persist_diary()
+
+    # ---- 主动陪伴 ----
+
+    async def _api_stats(self, request: Any) -> dict[str, Any]:
+        """管理页统计接口（由宿主挂载到 /api/plugin-web/whale_companion/stats）。"""
+        return self.engine.stats()
 
     @staticmethod
     def _within_active_hours(now: datetime, start_hour: int, end_hour: int) -> bool:
@@ -412,90 +443,50 @@ class WhaleCompanionPlugin(PluginBase):
         return now.hour >= start_hour or now.hour < end_hour
 
     async def _proactive_tick(self) -> None:
-        """定时检查符合条件的目标，按配置节奏发送短消息。"""
+        """整理记忆与日记，并按配置节奏检查目标、发送主动消息。"""
         config = self._config()
-        if not config.enabled or not self._targets(config):
+        targets = self._targets(config)
+        now = datetime.now().astimezone()
+        now_ts = time.time()
+
+        # 保留期清理与主动目标无关，所有用户都应遵守
+        if self.engine.prune_memory() > 0:
+            await self._persist()
+        if self._diary is not None:
+            removed = self._diary.prune(
+                now_ts,
+                config.memory_retention_days,
+                limit=config.diary_max_entries,
+            )
+            if removed > 0:
+                await self._persist_diary()
+
+        if config.diary_enabled and now.hour >= config.diary_hour:
+            await self._write_due_diaries(now)
+
+        if not targets:
+            return
+
+        await consolidate_targets(self.engine, self.llm, targets, persist=self._persist)
+        if not config.enabled:
             return
         if self.llm is None or self.connection is None:
             logger.debug("LLM 或连接尚未就绪，跳过鲸鱼娘主动陪伴")
             return
 
-        now = datetime.now().astimezone()
         if not self._within_active_hours(
             now, config.active_start_hour, config.active_end_hour
         ):
             return
 
         async with self._tick_lock:
-            now_ts = time.time()
-            today = now.date().isoformat()
-            idle_seconds = config.idle_minutes * 60
-            for target_id in self._targets(config):
-                key = self._target_key(target_id)
-                activity_ts = self._last_activity.get(key, self._started_at)
-                if now_ts - activity_ts < idle_seconds:
-                    continue
-
-                async with self._state_lock:
-                    if key in self._state["opt_out"]:
-                        continue
-                    last_sent = float(self._state["last_sent"].get(key, 0) or 0)
-                    daily = self._state["sent_today"].get(key, {})
-                    count = (
-                        int(daily.get("count", 0)) if daily.get("date") == today else 0
-                    )
-                if now_ts - last_sent < config.interval_hours * 3600:
-                    continue
-                if count >= config.daily_limit:
-                    continue
-
-                prompt = (
-                    f"现在是 {now.strftime('%Y-%m-%d %H:%M')}。请自然地给熟悉的聊天伙伴发一条简短问候，"
-                    "像鲸鱼娘偶尔想起对方时轻轻开口。最多两句、约 50 个汉字；可以结合已有对话，"
-                    "但没有可靠上下文时不要编造共同经历。不要提定时任务，不要制造紧急感，"
-                    "不要索要回复。只输出这条消息本身。"
-                )
-                try:
-                    reply = await self.llm.chat(
-                        message=prompt,
-                        message_type="private",
-                        group_id=0,
-                        user_id=target_id,
-                        user_name="",
-                        system_prompt=WHALE_SYSTEM_PROMPT,
-                    )
-                    if not reply:
-                        continue
-                    reply = str(reply).strip()
-                    if len(reply) > 180:
-                        reply = reply[:179].rstrip() + "…"
-                    if not reply:
-                        continue
-
-                    result = await self.connection.send_private_msg(
-                        user_id=target_id,
-                        message=reply,
-                    )
-                    if isinstance(result, dict) and (
-                        result.get("status") == "failed"
-                        or result.get("retcode", 0) not in (0, "0", None)
-                    ):
-                        raise RuntimeError(f"消息发送失败: {result}")
-
-                    async with self._state_lock:
-                        self._state["last_sent"][key] = now_ts
-                        self._state["sent_today"][key] = {
-                            "date": today,
-                            "count": count + 1,
-                        }
-                        snapshot = self._state_snapshot()
-                    await asyncio.to_thread(self._write_state, snapshot)
-                    logger.info(
-                        "鲸鱼娘主动私聊消息已发送: target=%s",
-                        target_id,
-                    )
-                except Exception:
-                    logger.exception(
-                        "鲸鱼娘主动私聊消息发送失败: target=%s",
-                        target_id,
-                    )
+            await send_due_messages(
+                engine=self.engine,
+                llm=self.llm,
+                connection=self.connection,
+                config=config,
+                targets=targets,
+                started_at=self._started_at,
+                persist=self._persist,
+                diary_provider=self._diary_text,
+            )

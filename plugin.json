@@ -1,7 +1,7 @@
 {
   "name": "whale_companion",
-  "version": "1.0.0",
+  "version": "1.3.0",
   "author": "Qingci-Bot",
-  "description": "DeepSeek 鲸鱼娘主动陪伴与轻量对话",
+  "description": "DeepSeek 鲸鱼娘主动陪伴：私聊对话、长期记忆、情绪感知、私人日记与管理页",
   "category": "chat"
 }

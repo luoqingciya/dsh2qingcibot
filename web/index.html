@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>鲸鱼娘陪伴</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f8fb;
+        --panel: #ffffff;
+        --text: #1c2430;
+        --muted: #64748b;
+        --border: #e2e8f0;
+        --accent: #2f7f9e;
+        --warn: #b45309;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #10161d;
+          --panel: #171f28;
+          --text: #e6edf5;
+          --muted: #94a3b8;
+          --border: #263241;
+          --accent: #6fc3dd;
+          --warn: #fbbf24;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.6 "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      h1 { font-size: 18px; margin: 0; }
+      .muted { color: var(--muted); font-size: 12px; }
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .card .label { color: var(--muted); font-size: 12px; }
+      .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      th, td {
+        text-align: left;
+        padding: 9px 10px;
+        border-bottom: 1px solid var(--border);
+        white-space: nowrap;
+      }
+      th { color: var(--muted); font-weight: 500; font-size: 12px; }
+      tr:last-child td { border-bottom: 0; }
+      .tag {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .tag.warn { color: var(--warn); border-color: currentColor; }
+      button {
+        border: 1px solid var(--border);
+        background: var(--panel);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      button:hover { border-color: var(--accent); color: var(--accent); }
+      #error {
+        display: none;
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid var(--warn);
+        border-radius: 8px;
+        color: var(--warn);
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>鲸鱼娘陪伴</h1>
+        <div class="muted" id="generated">加载中…</div>
+      </div>
+      <button id="refresh" type="button">刷新</button>
+    </header>
+
+    <div id="error"></div>
+
+    <section class="cards">
+      <div class="card"><div class="label">陪伴用户</div><div class="value" id="users">-</div></div>
+      <div class="card"><div class="label">记忆条数</div><div class="value" id="facts">-</div></div>
+      <div class="card"><div class="label">今日主动消息</div><div class="value" id="sent">-</div></div>
+      <div class="card"><div class="label">已暂停</div><div class="value" id="paused">-</div></div>
+      <div class="card"><div class="label">发送异常</div><div class="value" id="failing">-</div></div>
+    </section>
+
+    <table>
+      <thead>
+        <tr>
+          <th>用户</th>
+          <th>最近活跃</th>
+          <th>互动</th>
+          <th>记忆</th>
+          <th>心情</th>
+          <th>状态</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td colspan="6" class="muted">暂无数据</td></tr>
+      </tbody>
+    </table>
+
+    <script>
+      const API = "/api/plugin-web/whale_companion/stats";
+      const token = new URLSearchParams(location.search).get("token") || "";
+
+      function setText(id, value) {
+        document.getElementById(id).textContent = String(value);
+      }
+
+      function render(data) {
+        setText("generated", data.generated_at ? `更新于 ${data.generated_at}` : "");
+        setText("users", data.users ?? 0);
+        setText("facts", data.facts ?? 0);
+        setText("sent", data.sent_today ?? 0);
+        setText("paused", data.paused ?? 0);
+        setText("failing", data.failing ?? 0);
+
+        const body = document.getElementById("rows");
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        if (!rows.length) {
+          body.innerHTML = '<tr><td colspan="6" class="muted">暂无数据</td></tr>';
+          return;
+        }
+        body.innerHTML = rows
+          .map((row) => {
+            const status = row.paused
+              ? '<span class="tag">已暂停</span>'
+              : row.failure_count
+                ? `<span class="tag warn">失败 ${row.failure_count}</span>`
+                : '<span class="tag">正常</span>';
+            const title = row.last_error ? ` title="${escapeHtml(row.last_error)}"` : "";
+            return `<tr>
+              <td>${escapeHtml(row.user_id || "")}</td>
+              <td>${escapeHtml(row.last_seen || "-")}</td>
+              <td>${row.interactions ?? 0}</td>
+              <td>${row.facts ?? 0}</td>
+              <td>${escapeHtml(row.emotion || "-")}</td>
+              <td${title}>${status}</td>
+            </tr>`;
+          })
+          .join("");
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+
+      async function load() {
+        const error = document.getElementById("error");
+        error.style.display = "none";
+        try {
+          const headers = token ? { "X-API-Key": token } : {};
+          const response = await fetch(API, { headers });
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+          render(await response.json());
+        } catch (err) {
+          error.textContent = `读取统计失败：${err.message}。若已启用 API 鉴权，请从插件管理页重新打开本页面。`;
+          error.style.display = "block";
+        }
+      }
+
+      document.getElementById("refresh").addEventListener("click", load);
+      load();
+    </script>
+  </body>
+</html>
