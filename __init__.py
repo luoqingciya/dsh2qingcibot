@@ -349,11 +349,12 @@ class WhaleCompanionPlugin(PluginBase):
             await self._persist()
             return "鲸鱼娘刚才没听清，能再和我说一次吗？"
 
-        engine.observe_bot_message(user_id, str(reply))
+        text = str(reply)
+        engine.observe_bot_message(user_id, text)
         if engine.should_consolidate(user_id):
             await engine.consolidate(user_id, self.llm)
         await self._persist()
-        return reply
+        return text
 
     # ---- 日记 ----
 

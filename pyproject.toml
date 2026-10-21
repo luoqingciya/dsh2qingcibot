@@ -1,0 +1,24 @@
+[tool.ruff]
+# 与 Qingci-Bot 插件 SDK 保持一致：支持 Python 3.10+
+target-version = "py310"
+line-length = 88
+exclude = [".venv", "__pycache__", ".git", ".workbuddy-ai", ".ruff_cache"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B", "C4"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# 插件入口需先 reload 子模块，再导入它们
+"__init__.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+exclude = ["tests", ".venv"]

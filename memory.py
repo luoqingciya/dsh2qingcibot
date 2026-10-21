@@ -189,7 +189,7 @@ def recall(profile: UserState, query: str, now: float, *, limit: int = 6) -> lis
     query_terms = _terms(query)
     relevance = _bm25(query_terms, docs) if query_terms else [0.0] * len(docs)
     scored: list[tuple[float, str]] = []
-    for fact, bm25_score in zip(profile.facts, relevance):
+    for fact, bm25_score in zip(profile.facts, relevance, strict=True):
         age_days = max(0.0, now - fact.ts) / 86400.0 if fact.ts else 999.0
         recency = math.pow(0.5, age_days / 45.0) * 0.25
         weight = min(fact.hits, 5) * 0.03
